@@ -15,6 +15,7 @@ typedef struct {
     time_t mtime; // timestamp for last modification
     bool is_directory;
     bool in_use;
+	int parent_inode;
     char data[MAX_DATA_SIZE];
 } pifs_inode_t;
 
@@ -26,6 +27,10 @@ int pifs_readdir( const char *, void *, fuse_fill_dir_t, off_t, struct fuse_file
 int pifs_open( const char *, struct fuse_file_info * );
 int pifs_read( const char *, char *, size_t, off_t, struct fuse_file_info * );
 int pifs_release(const char *path, struct fuse_file_info *fi);
+int pifs_mknod(const char *, mode_t, dev_t);
+int pifs_mkdir(const char *, mode_t);
+int pifs_write(const char *, const char *, size_t, off_t, struct fuse_file_info *);
+int find_children(int, int *, int);
 void* pifs_init();
 void pifs_destroy(void *private_data);
 /*
@@ -33,21 +38,21 @@ void pifs_destroy(void *private_data);
  * Notice: The version on Github may be a newer version than you have installed test
  */
 static struct fuse_operations pifs_oper = {
-	.getattr	= pifs_getattr,
-	.readdir	= pifs_readdir,
-	.mknod = NULL,
-	.mkdir = NULL,
-	.unlink = NULL,
-	.rmdir = NULL,
-	.truncate = NULL,
-	.open	= pifs_open,
-	.read	= pifs_read,
-	.release = pifs_release,
-	.write = NULL,
-	.rename = NULL,
-	.utime = NULL,
-	.init = pifs_init,
-	.destroy = pifs_destroy
+    .getattr    = pifs_getattr,
+    .readdir    = pifs_readdir,
+    .mknod      = pifs_mknod,
+    .mkdir      = pifs_mkdir,
+    .unlink     = NULL,
+    .rmdir      = NULL,
+    .truncate   = NULL,
+    .open       = pifs_open,
+    .read       = pifs_read,
+    .release    = pifs_release,
+    .write      = pifs_write,
+    .rename     = NULL,
+    .utime      = NULL,
+    .init       = pifs_init,
+    .destroy    = pifs_destroy
 };
 
 /* helper function to find inode index*/
@@ -71,6 +76,139 @@ int find_inode_index(const char *path) {
         }
     }
     return -1; // didnt find file
+}
+
+/* helper function to find all files belonging to a parent directory */
+int find_children(int parent_index, int *children_indices, int max_children) {
+    int count = 0;
+    for (int i = 0; i < MAX_FILES && count < max_children; i++) {
+        if (disk_memory[i].in_use && disk_memory[i].parent_inode == parent_index && i != 0) {
+            children_indices[count++] = i;
+        }
+    }
+    return count;
+}
+
+/* Create a file */
+int pifs_mknod(const char *path, mode_t mode, dev_t dev) {
+    (void) dev;
+    printf("mknod: (path=%s)\n", path);
+    
+    /* check if file already exists */
+    if (find_inode_index(path) != -1) {
+        return -EEXIST;
+    }
+    
+    /* find a free inode slot */
+    int free_slot = -1;
+    for (int i = 1; i < MAX_FILES; i++) {
+        if (!disk_memory[i].in_use) {
+            free_slot = i;
+            break;
+        }
+    }
+    
+    if (free_slot == -1) {
+        return -ENOSPC;
+    }
+    
+    /* extract filename */
+    const char *filename = path;
+    if (path[0] == '/') {
+        filename++;
+    }
+    
+    /* initialize the new inode */
+    strcpy(disk_memory[free_slot].name, filename);
+    disk_memory[free_slot].size = 0;
+    disk_memory[free_slot].mtime = time(NULL);
+    disk_memory[free_slot].is_directory = false;
+    disk_memory[free_slot].in_use = true;
+    disk_memory[free_slot].parent_inode = 0; /* parent is root */
+    memset(disk_memory[free_slot].data, 0, MAX_DATA_SIZE);
+    
+    printf("mknod: Created file '%s' at inode %d\n", filename, free_slot);
+    
+    return 0;
+}
+
+/* Create a directory */
+int pifs_mkdir(const char *path, mode_t mode) {
+    (void) mode;
+    printf("mkdir: (path=%s)\n", path);
+    
+    /* check if directory already exists */
+    if (find_inode_index(path) != -1) {
+        return -EEXIST;
+    }
+    
+    /* find a free inode slot */
+    int free_slot = -1;
+    for (int i = 1; i < MAX_FILES; i++) {
+        if (!disk_memory[i].in_use) {
+            free_slot = i;
+            break;
+        }
+    }
+    
+    if (free_slot == -1) {
+        return -ENOSPC;
+    }
+    
+    /* extract directory name */
+    const char *dirname = path;
+    if (path[0] == '/') {
+        dirname++;
+    }
+    
+    /* initialize the new directory inode */
+    strcpy(disk_memory[free_slot].name, dirname);
+    disk_memory[free_slot].size = 0;
+    disk_memory[free_slot].mtime = time(NULL);
+    disk_memory[free_slot].is_directory = true;
+    disk_memory[free_slot].in_use = true;
+    disk_memory[free_slot].parent_inode = 0; /* parent is root */
+    memset(disk_memory[free_slot].data, 0, MAX_DATA_SIZE);
+    
+    printf("mkdir: Created directory '%s' at inode %d\n", dirname, free_slot);
+    
+    return 0;
+}
+
+/* Write to a file */
+int pifs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
+    (void) fi;
+    printf("write: (path=%s, size=%zu, offset=%lld)\n", path, size, (long long)offset);
+    
+    int inode_index = find_inode_index(path);
+    if (inode_index == -1) {
+        return -ENOENT;
+    }
+    
+    pifs_inode_t *inode = &disk_memory[inode_index];
+    
+    if (inode->is_directory) {
+        return -EISDIR;
+    }
+    
+    if (offset + size > MAX_DATA_SIZE) {
+        size = MAX_DATA_SIZE - offset;
+        if (size <= 0) {
+            return -ENOSPC;
+        }
+    }
+    
+    memcpy(inode->data + offset, buf, size);
+    
+    if (offset + size > inode->size) {
+        inode->size = offset + size;
+    }
+    
+    inode->mtime = time(NULL);
+    
+    printf("write: wrote %zu bytes to file '%s'\n", size, inode->name);
+    
+    return size;
 }
 /*
  * Return file attributes.
@@ -133,18 +271,35 @@ int pifs_getattr( const char *path, struct stat *stbuf ) {
  * in particular it can return -EBADF if the file handle is invalid, or -ENOENT if you use the path argument and the path doesn't exist.
 */
 int pifs_readdir( const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi ) {
-	(void) offset;
-	(void) fi;
-	printf("readdir: (path=%s)\n", path);
+    (void) offset;
+    (void) fi;
+    printf("readdir: (path=%s)\n", path);
 
-	if(strcmp(path, "/") != 0)
-		return -ENOENT;
+    // Find the inode index for the directory path
+    int dir_index = find_inode_index(path);
+    if (dir_index == -1) {
+        return -ENOENT;
+    }
 
-	filler(buf, ".", NULL, 0);
-	filler(buf, "..", NULL, 0);
-	filler(buf, "hello", NULL, 0);
+    // Check if it's actually a directory
+    if (!disk_memory[dir_index].is_directory) {
+        return -ENOTDIR;
+    }
 
-	return 0;
+    // Add . and .. entries
+    filler(buf, ".", NULL, 0);
+    filler(buf, "..", NULL, 0);
+
+    // Use find_children to get all files in this directory
+    int children[MAX_FILES];
+    int child_count = find_children(dir_index, children, MAX_FILES);
+
+    // Add each child to the directory listing
+    for (int i = 0; i < child_count; i++) {
+        filler(buf, disk_memory[children[i]].name, NULL, 0);
+    }
+
+    return 0;
 }
 
 /*
@@ -165,8 +320,36 @@ int pifs_open( const char *path, struct fuse_file_info *fi ) {
 */
 int pifs_read( const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi ) {
     printf("read: (path=%s)\n", path);
-	memcpy( buf, "Hello\n", 6 );
-	return 6;
+    
+    // Find the inode index for this file
+    int inode_index = find_inode_index(path);
+    if (inode_index == -1) {
+        return -ENOENT;
+    }
+    
+    pifs_inode_t *inode = &disk_memory[inode_index];
+    
+    // Check if it's a directory
+    if (inode->is_directory) {
+        return -EISDIR;
+    }
+    
+    // Check if offset is beyond file size
+    if (offset >= inode->size) {
+        return 0;  // EOF
+    }
+    
+    // Limit size to remaining bytes in file
+    if (offset + size > inode->size) {
+        size = inode->size - offset;
+    }
+    
+    // Copy data from inode to buffer
+    memcpy(buf, inode->data + offset, size);
+    
+    printf("read: read %zu bytes from file '%s' (offset=%lld)\n", size, inode->name, (long long)offset);
+    
+    return size;
 }
 
 /*
@@ -189,36 +372,31 @@ int pifs_release(const char *path, struct fuse_file_info *fi) {
 void* pifs_init() {
     printf("init filesystem\n");
 
-	// Allocate memory for inodes
-	disk_memory = (pifs_inode_t *)malloc(MAX_FILES * sizeof(pifs_inode_t));
-	if (disk_memory == NULL) {
-		fprintf(stderr, "Failed to allocate memory for inodes\n");
-		exit(EXIT_FAILURE);
-	}
+    // Allocate memory for inodes
+    disk_memory = (pifs_inode_t *)malloc(MAX_FILES * sizeof(pifs_inode_t));
+    if (disk_memory == NULL) {
+        fprintf(stderr, "Failed to allocate memory for inodes\n");
+        exit(EXIT_FAILURE);
+    }
 
-	// Test reading from partition
-	int fd = open(PARTITION_PATH, O_RDONLY);
-	// if error opening
-	if (fd < 0) {
-		perror("Failed to open partition");
-		exit(EXIT_FAILURE);
-	}
-	// put a tiny bit of data into the buffer to test reading
-	char buffer[512];
-	ssize_t bytes_read = read(fd, buffer, sizeof(buffer));
-	if (bytes_read == 0) {
-		fprintf(stderr, "Read zero bytes from partition, possibly empty or end of file\n");
-		close(fd);
-		exit(EXIT_FAILURE);
-	}
-	// if somehow negative bytes read, then it's an error
-	if (bytes_read < 0) {
-		perror("Failed to read from partition");
-		close(fd);
-		exit(EXIT_FAILURE);
-	}
-	printf("Read %zd bytes from partition: %.*s\n", bytes_read, (int)bytes_read, buffer);
-	close(fd);
+    // Read filesystem from partition
+    int fd = open(PARTITION_PATH, O_RDONLY);
+    if (fd < 0) {
+        perror("Failed to open partition for reading");
+        free(disk_memory);
+        exit(EXIT_FAILURE);
+    }
+
+    ssize_t bytes_read = read(fd, disk_memory, MAX_FILES * sizeof(pifs_inode_t));
+    if (bytes_read < 0) {
+        perror("Failed to read from partition");
+        close(fd);
+        free(disk_memory);
+        exit(EXIT_FAILURE);
+    }
+
+    printf("Read %zd bytes from partition\n", bytes_read);
+    close(fd);
 
     return NULL;
 }
