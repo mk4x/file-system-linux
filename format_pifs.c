@@ -17,6 +17,7 @@ typedef struct {
     time_t mtime;
     bool is_directory;
     bool in_use;
+    int parent_inode;
     char data[MAX_DATA_SIZE];
 } pifs_inode_t;
 
@@ -31,6 +32,7 @@ int main() {
     disk_memory[0].mtime = time(NULL);
     disk_memory[0].is_directory = true;
     disk_memory[0].in_use = true;
+    disk_memory[0].parent_inode = -1; 
 
     // open partition, create if not exist with rw permissions
     int fd = open(PARTITION_PATH, O_WRONLY | O_CREAT, 0666);
