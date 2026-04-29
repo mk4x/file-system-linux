@@ -14,6 +14,7 @@
 typedef struct {
     char name[256];
     uint32_t size;
+    time_t atime;
     time_t mtime;
     bool is_directory;
     bool in_use;
@@ -29,6 +30,7 @@ int main() {
     // name is empty because find_inode_index expects "" for "/"
     strcpy(disk_memory[0].name, ""); 
     disk_memory[0].size = 0;
+    disk_memory[0].atime = time(NULL);
     disk_memory[0].mtime = time(NULL);
     disk_memory[0].is_directory = true;
     disk_memory[0].in_use = true;
