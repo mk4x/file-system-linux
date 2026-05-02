@@ -117,29 +117,30 @@ static int find_parent_inode(const char *path, int *parent_inode, const char **l
         return -EINVAL;
     }
 
-    // copy the path to a temporary buffer for manipulation
-    strcpy(temp, path);
-    char *last_slash = strrchr(temp, '/'); // find the last slash to separate parent path and leaf name
-    if (last_slash == NULL) {
+    // find the last slash in the original path
+    const char *last_slash_in_path = strrchr(path, '/');
+    if (last_slash_in_path == NULL) {
         return -EINVAL;
     }
 
-    // lash_slash is pointering to the last slash in the path, if it's the first character, then the parent is root
-    if (last_slash == temp) {
+    // if it's the first character, then the parent is root
+    if (last_slash_in_path == path) {
         *parent_inode = 0;
-        *leaf_name = last_slash + 1;
+        *leaf_name = last_slash_in_path + 1;
         return (*leaf_name[0] == '\0') ? -EINVAL : 0;
     }
 
-    // terminate the string at the last slash to isolate the parent path, then find the parent inode index
+    // copy the path to a temporary buffer and terminate at the last slash to isolate the parent path
+    strcpy(temp, path);
+    char *last_slash = strrchr(temp, '/');
     *last_slash = '\0';
     *parent_inode = find_inode_index(temp); // find the parent inode index using the modified path
     if (*parent_inode == -1) {
         return -ENOENT;
     }
 
-    // set the leaf name to the part of the path after the last slash, and validate that it's not empty
-    *leaf_name = last_slash + 1;
+    // set the leaf name to the part of the path after the last slash from the original path, and validate that it's not empty
+    *leaf_name = last_slash_in_path + 1;
     if (*leaf_name[0] == '\0') {
         return -EINVAL;
     }
